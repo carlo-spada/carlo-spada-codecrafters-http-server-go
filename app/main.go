@@ -78,7 +78,7 @@ func handleConn(conn net.Conn) {
 		switch {
 	// ----- GETs we already support -----
 	case method == "GET" && path == "/":
-		writeResponse(conn, "HTTP/1.1 200 OK", map[string]string{}, nil)
+		writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(map[string]string{}, headers), nil)
 
 	case method == "GET" && strings.HasPrefix(path, "/echo/"):
 		msg := strings.TrimPrefix(path, "/echo/")
@@ -95,7 +95,7 @@ func handleConn(conn net.Conn) {
 					"Content-Type":   "text/plain",
 					"Content-Length": fmt.Sprintf("%d", len(plain)),
 				}
-				writeResponse(conn, "HTTP/1.1 200 OK", h, plain)
+				writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(h, headers), plain)
 				break
 			}
 			// Close to flush footer
@@ -104,7 +104,7 @@ func handleConn(conn net.Conn) {
 					"Content-Type":   "text/plain",
 					"Content-Length": fmt.Sprintf("%d", len(plain)),
 				}
-				writeResponse(conn, "HTTP/1.1 200 OK", h, plain)
+				writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(h, headers), plain)
 				break
 			}
 			gzBody := buf.Bytes()
@@ -113,7 +113,7 @@ func handleConn(conn net.Conn) {
 				"Content-Encoding": "gzip",
 				"Content-Length":   fmt.Sprintf("%d", len(gzBody)),
 			}
-			writeResponse(conn, "HTTP/1.1 200 OK", h, gzBody)
+			writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(h, headers), gzBody)
 			break
 		}
 
@@ -122,42 +122,42 @@ func handleConn(conn net.Conn) {
 			"Content-Type":   "text/plain",
 			"Content-Length": fmt.Sprintf("%d", len(plain)),
 		}
-		writeResponse(conn, "HTTP/1.1 200 OK", h, plain)
+		writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(h, headers), plain)
 
 	case method == "GET" && path == "/user-agent":
 		ua := headers["user-agent"]
 		body := []byte(ua)
-		writeResponse(conn, "HTTP/1.1 200 OK", map[string]string{
+		writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(map[string]string{
 			"Content-Type":   "text/plain",
 			"Content-Length": fmt.Sprintf("%d", len(body)),
-		}, body)
+		}, headers), body)
 
 	case strings.HasPrefix(path, "/files/") && method == "GET":
 		// Serve existing file
 		if baseDir == "" {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
+			writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 		raw := strings.TrimPrefix(path, "/files/")
 		filename, err := url.PathUnescape(raw)
 		if err != nil {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
+			writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 		full, ok := safeJoin(baseDir, filename)
 		if !ok {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
+			writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 		data, err := os.ReadFile(full)
 		if err != nil {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
+			writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
-		writeResponse(conn, "HTTP/1.1 200 OK", map[string]string{
+		writeResponse(conn, "HTTP/1.1 200 OK", maybeAddConnectionClose(map[string]string{
 			"Content-Type":   "application/octet-stream",
 			"Content-Length": fmt.Sprintf("%d", len(data)),
-		}, data)
+		}, headers), data)
 
 	// ----- NEW: POST /files/{filename} -----
 	case strings.HasPrefix(path, "/files/") && method == "POST":
@@ -166,12 +166,12 @@ func handleConn(conn net.Conn) {
 		raw := strings.TrimPrefix(path, "/files/")
 		filename, err := url.PathUnescape(raw)
 		if err != nil {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
+			writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 		full, ok := safeJoin(baseDir, filename)
 		if !ok {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
+			writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 
@@ -179,18 +179,18 @@ func handleConn(conn net.Conn) {
 		clStr := headers["content-length"]
 		if clStr == "" {
 			// For this stage the tester always sends Content-Length, but guard anyway
-			writeResponse(conn, "HTTP/1.1 411 Length Required", nil, nil)
+			writeResponse(conn, "HTTP/1.1 411 Length Required", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 		cl, err := strconv.Atoi(clStr)
 		if err != nil || cl < 0 {
-			writeResponse(conn, "HTTP/1.1 400 Bad Request", nil, nil)
+			writeResponse(conn, "HTTP/1.1 400 Bad Request", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 		data := make([]byte, cl)
 		if _, err = io.ReadFull(reader, data); err != nil {
 			// not enough bytes
-			writeResponse(conn, "HTTP/1.1 400 Bad Request", nil, nil)
+			writeResponse(conn, "HTTP/1.1 400 Bad Request", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 
@@ -198,15 +198,15 @@ func handleConn(conn net.Conn) {
 		if err := os.WriteFile(full, data, 0o644); err != nil {
 			// If directory missing or permission error, simplest is 404/500.
 			// The spec for the stage only checks success path; 500 is reasonable here.
-			writeResponse(conn, "HTTP/1.1 500 Internal Server Error", nil, nil)
+			writeResponse(conn, "HTTP/1.1 500 Internal Server Error", maybeAddConnectionClose(nil, headers), nil)
 			return
 		}
 
 		// Success: 201 Created, no body required
-		writeResponse(conn, "HTTP/1.1 201 Created", map[string]string{}, nil)
+		writeResponse(conn, "HTTP/1.1 201 Created", maybeAddConnectionClose(map[string]string{}, headers), nil)
 
 	default:
-		writeResponse(conn, "HTTP/1.1 404 Not Found", map[string]string{}, nil)
+		writeResponse(conn, "HTTP/1.1 404 Not Found", maybeAddConnectionClose(map[string]string{}, headers), nil)
 		}
 		// After responding, honor Connection: close (HTTP/1.1 is keep-alive by default)
 		if wantsClose(headers) {
@@ -303,4 +303,14 @@ func wantsClose(headers map[string]string) bool {
 		}
 	}
 	return false
+}
+
+func maybeAddConnectionClose(h map[string]string, reqHeaders map[string]string) map[string]string {
+	if wantsClose(reqHeaders) {
+		if h == nil {
+			h = map[string]string{}
+		}
+		h["Connection"] = "close"
+	}
+	return h
 }
