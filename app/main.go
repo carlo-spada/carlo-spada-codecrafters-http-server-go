@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -150,7 +151,7 @@ func handleConn(conn net.Conn) {
 			return
 		}
 		body := make([]byte, cl)
-		if _, err := reader.ReadFull(body); err != nil {
+		if _, err := io.ReadFull(reader, body); err != nil {
 			// not enough bytes
 			writeResponse(conn, "HTTP/1.1 400 Bad Request", nil, nil)
 			return
