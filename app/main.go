@@ -48,48 +48,80 @@ func handleConn(conn net.Conn) {
 	_ = method
 	_ = version
 
-	// 2) Consumir headers hasta línea en blanco
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return
-		}
-		if line == "\r\n" {
-			break
-		}
+	// 2) Leer headers en un mapa (case-insensitive → claves en minúsculas)
+	headers, ok := readHeaders(reader)
+	if !ok {
+		return
 	}
 
 	// 3) Routing mínimo
 	switch {
 	case path == "/":
-		// 200 sin cuerpo (como etapa anterior)
 		writeResponse(conn, "HTTP/1.1 200 OK", map[string]string{}, nil)
 
 	case strings.HasPrefix(path, "/echo/"):
 		msg := strings.TrimPrefix(path, "/echo/")
 		body := []byte(msg)
-		headers := map[string]string{
+		h := map[string]string{
 			"Content-Type":   "text/plain",
 			"Content-Length": fmt.Sprintf("%d", len(body)),
 		}
-		writeResponse(conn, "HTTP/1.1 200 OK", headers, body)
+		writeResponse(conn, "HTTP/1.1 200 OK", h, body)
+
+	case path == "/user-agent":
+		ua := headers["user-agent"] // puede no existir, pero el tester sí lo envía
+		body := []byte(ua)
+		h := map[string]string{
+			"Content-Type":   "text/plain",
+			"Content-Length": fmt.Sprintf("%d", len(body)),
+		}
+		writeResponse(conn, "HTTP/1.1 200 OK", h, body)
 
 	default:
-		// 404 sin cuerpo
 		writeResponse(conn, "HTTP/1.1 404 Not Found", map[string]string{}, nil)
 	}
 }
 
+// readHeaders lee líneas hasta el CRLF en blanco y devuelve un mapa nombre→valor.
+// - Nombres en minúsculas (case-insensitive).
+// - Recorta espacios alrededor del nombre y del valor.
+// - Si hay headers repetidos, concatena con coma (comportamiento típico HTTP/1.1 simple).
+func readHeaders(r *bufio.Reader) (map[string]string, bool) {
+	h := make(map[string]string)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return nil, false
+		}
+		if line == "\r\n" {
+			break // fin de headers
+		}
+		line = strings.TrimRight(line, "\r\n")
+
+		// nombre: valor
+		name, value, found := strings.Cut(line, ":")
+		if !found {
+			// línea malformada; para este reto, lo ignoramos de forma indulgente
+			continue
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		value = strings.TrimSpace(value)
+
+		if prev, exists := h[name]; exists && prev != "" && value != "" {
+			h[name] = prev + ", " + value
+		} else {
+			h[name] = value
+		}
+	}
+	return h, true
+}
+
 func writeResponse(conn net.Conn, statusLine string, headers map[string]string, body []byte) {
-	// Status line
 	fmt.Fprintf(conn, "%s\r\n", statusLine)
-	// Headers
 	for k, v := range headers {
 		fmt.Fprintf(conn, "%s: %s\r\n", k, v)
 	}
-	// Blank line
 	fmt.Fprint(conn, "\r\n")
-	// Body
 	if len(body) > 0 {
 		conn.Write(body)
 	}
