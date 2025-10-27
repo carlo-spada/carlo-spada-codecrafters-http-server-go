@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
@@ -77,17 +79,47 @@ func handleConn(conn net.Conn) {
 
 	case method == "GET" && strings.HasPrefix(path, "/echo/"):
 		msg := strings.TrimPrefix(path, "/echo/")
-		body := []byte(msg)
+		plain := []byte(msg)
 
+		// If client accepts gzip, compress and adjust headers/body accordingly.
+		if acceptsGzip(headers) {
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			if _, err := zw.Write(plain); err != nil {
+				// Fallback to uncompressed on unexpected compression error
+				_ = zw.Close()
+				h := map[string]string{
+					"Content-Type":   "text/plain",
+					"Content-Length": fmt.Sprintf("%d", len(plain)),
+				}
+				writeResponse(conn, "HTTP/1.1 200 OK", h, plain)
+				break
+			}
+			// Close to flush footer
+			if err := zw.Close(); err != nil {
+				h := map[string]string{
+					"Content-Type":   "text/plain",
+					"Content-Length": fmt.Sprintf("%d", len(plain)),
+				}
+				writeResponse(conn, "HTTP/1.1 200 OK", h, plain)
+				break
+			}
+			gzBody := buf.Bytes()
+			h := map[string]string{
+				"Content-Type":     "text/plain",
+				"Content-Encoding": "gzip",
+				"Content-Length":   fmt.Sprintf("%d", len(gzBody)),
+			}
+			writeResponse(conn, "HTTP/1.1 200 OK", h, gzBody)
+			break
+		}
+
+		// Otherwise, return uncompressed as before.
 		h := map[string]string{
 			"Content-Type":   "text/plain",
-			"Content-Length": fmt.Sprintf("%d", len(body)),
+			"Content-Length": fmt.Sprintf("%d", len(plain)),
 		}
-		// Negotiate gzip (header only in this stage; body remains uncompressed)
-		if acceptsGzip(headers) {
-			h["Content-Encoding"] = "gzip"
-		}
-		writeResponse(conn, "HTTP/1.1 200 OK", h, body)
+		writeResponse(conn, "HTTP/1.1 200 OK", h, plain)
 
 	case method == "GET" && path == "/user-agent":
 		ua := headers["user-agent"]
