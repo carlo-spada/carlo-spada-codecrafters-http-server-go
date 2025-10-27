@@ -119,11 +119,20 @@ func handleConn(conn net.Conn) {
 		}, data)
 
 	// ----- NEW: POST /files/{filename} -----
-	case strings.HasPrefix(path, "/files/") && method == "POST":
-		if baseDir == "" {
-			writeResponse(conn, "HTTP/1.1 404 Not Found", nil, nil)
-			return
-		}
+	case strings.HasPrefix(path, "/echo/"):
+	msg := strings.TrimPrefix(path, "/echo/")
+	body := []byte(msg)
+
+	h := map[string]string{
+		"Content-Type":   "text/plain",
+		"Content-Length": fmt.Sprintf("%d", len(body)),
+	}
+	// NEW: negotiate gzip (header only; body stays plain for this stage)
+	if acceptsGzip(headers) {
+		h["Content-Encoding"] = "gzip"
+	}
+
+	writeResponse(conn, "HTTP/1.1 200 OK", h, body)
 
 		// Decode filename
 		raw := strings.TrimPrefix(path, "/files/")
@@ -150,23 +159,23 @@ func handleConn(conn net.Conn) {
 			writeResponse(conn, "HTTP/1.1 400 Bad Request", nil, nil)
 			return
 		}
-		body := make([]byte, cl)
-		if _, err := io.ReadFull(reader, body); err != nil {
-			// not enough bytes
-			writeResponse(conn, "HTTP/1.1 400 Bad Request", nil, nil)
-			return
-		}
+			data := make([]byte, cl)
+			if _, err = io.ReadFull(reader, data); err != nil {
+				// not enough bytes
+				writeResponse(conn, "HTTP/1.1 400 Bad Request", nil, nil)
+				return
+			}
 
-		// Write file (0644)
-		if err := os.WriteFile(full, body, 0o644); err != nil {
-			// If directory missing or permission error, simplest is 404/500.
-			// The spec for the stage only checks success path; 500 is reasonable here.
-			writeResponse(conn, "HTTP/1.1 500 Internal Server Error", nil, nil)
-			return
-		}
+			// Write file (0644)
+			if err := os.WriteFile(full, data, 0o644); err != nil {
+				// If directory missing or permission error, simplest is 404/500.
+				// The spec for the stage only checks success path; 500 is reasonable here.
+				writeResponse(conn, "HTTP/1.1 500 Internal Server Error", nil, nil)
+				return
+			}
 
-		// Success: 201 Created, no body required
-		writeResponse(conn, "HTTP/1.1 201 Created", map[string]string{}, nil)
+			// Success: 201 Created, no body required
+			writeResponse(conn, "HTTP/1.1 201 Created", map[string]string{}, nil)
 
 	default:
 		writeResponse(conn, "HTTP/1.1 404 Not Found", map[string]string{}, nil)
@@ -228,4 +237,18 @@ func safeJoin(base, name string) (string, bool) {
 		return absTarget, true
 	}
 	return "", false
+}
+
+func acceptsGzip(headers map[string]string) bool {
+	ae := headers["accept-encoding"]
+	if ae == "" {
+		return false
+	}
+	// Tokenize on comma, strip spaces, compare case-insensitively.
+	for _, tok := range strings.Split(ae, ",") {
+		if strings.EqualFold(strings.TrimSpace(tok), "gzip") {
+			return true
+		}
+	}
+	return false
 }
