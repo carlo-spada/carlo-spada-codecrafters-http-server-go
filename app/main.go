@@ -52,27 +52,30 @@ func handleConn(conn net.Conn) {
 
 	reader := bufio.NewReader(conn)
 
-	// 1) Request line
-	reqLine, err := reader.ReadString('\n')
-	if err != nil {
-		return
-	}
-	reqLine = strings.TrimRight(reqLine, "\r\n")
+	for {
+		// 1) Request line
+		reqLine, err := reader.ReadString('\n')
+		if err != nil {
+			// EOF or read error closes the connection
+			return
+		}
+		reqLine = strings.TrimRight(reqLine, "\r\n")
 
-	parts := strings.SplitN(reqLine, " ", 3)
-	if len(parts) < 3 {
-		return
-	}
-	method, path, version := parts[0], parts[1], parts[2]
-	_ = version // not used yet
+		parts := strings.SplitN(reqLine, " ", 3)
+		if len(parts) < 3 {
+			// Malformed; close the connection
+			return
+		}
+		method, path, version := parts[0], parts[1], parts[2]
+		_ = version // not used yet
 
-	// 2) Headers → map (lower-case keys)
-	headers, ok := readHeaders(reader)
-	if !ok {
-		return
-	}
+		// 2) Headers → map (lower-case keys)
+		headers, ok := readHeaders(reader)
+		if !ok {
+			return
+		}
 
-	switch {
+		switch {
 	// ----- GETs we already support -----
 	case method == "GET" && path == "/":
 		writeResponse(conn, "HTTP/1.1 200 OK", map[string]string{}, nil)
@@ -204,6 +207,12 @@ func handleConn(conn net.Conn) {
 
 	default:
 		writeResponse(conn, "HTTP/1.1 404 Not Found", map[string]string{}, nil)
+		}
+		// After responding, honor Connection: close (HTTP/1.1 is keep-alive by default)
+		if wantsClose(headers) {
+			return
+		}
+		// Otherwise, loop and read the next request on the same connection.
 	}
 }
 
@@ -277,6 +286,19 @@ func acceptsGzip(headers map[string]string) bool {
 			t = t[:idx]
 		}
 		if strings.EqualFold(t, "gzip") {
+			return true
+		}
+	}
+	return false
+}
+
+func wantsClose(headers map[string]string) bool {
+	v := headers["connection"]
+	if v == "" {
+		return false
+	}
+	for _, tok := range strings.Split(v, ",") {
+		if strings.EqualFold(strings.TrimSpace(tok), "close") {
 			return true
 		}
 	}
